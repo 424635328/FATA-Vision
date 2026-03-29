@@ -1,0 +1,64 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  color-scheme: dark;
+  --font-display: "Aptos", "Trebuchet MS", "Segoe UI Variable Display", "Segoe UI", sans-serif;
+  --font-mono: "Cascadia Code", "IBM Plex Mono", "Consolas", "Courier New", monospace;
+}
+
+html {
+  scroll-behavior: smooth;
+}
+
+body {
+  min-height: 100vh;
+  background:
+    radial-gradient(circle at top left, rgba(34, 211, 238, 0.12), transparent 35%),
+    radial-gradient(circle at top right, rgba(249, 115, 22, 0.12), transparent 30%),
+    linear-gradient(160deg, #07111d 0%, #0c1524 45%, #111b2e 100%);
+  color: #e2e8f0;
+  font-family: var(--font-display);
+}
+
+code,
+pre,
+textarea,
+.font-mono {
+  font-family: var(--font-mono);
+}
+
+@layer components {
+  .glass-card {
+    @apply rounded-3xl border border-white/10 bg-slate-950/55 shadow-glow backdrop-blur-xl;
+  }
+
+  .panel-label {
+    @apply mb-2 block text-xs font-semibold uppercase tracking-[0.24em] text-slate-400;
+  }
+
+  .panel-input {
+    @apply w-full rounded-2xl border border-white/10 bg-slate-900/70 px-4 py-3 text-sm text-slate-100 outline-none transition duration-200 placeholder:text-slate-500 focus:border-cyan-400/70 focus:ring-2 focus:ring-cyan-400/20;
+  }
+
+  .panel-select {
+    @apply panel-input appearance-none;
+  }
+
+  .panel-button {
+    @apply inline-flex items-center justify-center rounded-2xl border px-4 py-3 text-sm font-semibold transition duration-200;
+  }
+
+  .panel-button-primary {
+    @apply panel-button border-orange-300/20 bg-orange-500 text-white hover:bg-orange-400;
+  }
+
+  .panel-button-secondary {
+    @apply panel-button border-white/10 bg-slate-900/60 text-slate-200 hover:border-cyan-400/40 hover:text-white;
+  }
+
+  .panel-button-danger {
+    @apply panel-button border-rose-400/20 bg-rose-500/10 text-rose-200 hover:bg-rose-500/20;
+  }
+}

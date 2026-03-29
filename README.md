@@ -119,4 +119,3 @@ function runAlgorithm(context) {
 ```
 
 当前模板仅适用于本地演示或可信环境。若未来要接入公网用户上传代码，建议改为代码沙箱、队列 Worker 或独立 Python 服务。
-# FATA-Vision
