@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, useCallback } from "react";
 
 import Visualization from "@/components/Visualization";
 import {
@@ -16,6 +16,7 @@ import type {
   RunAlgorithmRequest
 } from "@/lib/types";
 
+// 常量定义
 const DEFAULT_AGENT_COUNT = 18;
 const DEFAULT_MAX_FES = 80;
 const DEFAULT_PLAYBACK_MS = 180;
@@ -29,11 +30,25 @@ const PLAYBACK_PRESETS = [
   { label: "演示", value: 1200 }
 ] as const;
 
+// 工具函数
 function clampPlaybackSpeed(value: number) {
   return Math.min(Math.max(Math.round(value), MIN_PLAYBACK_MS), MAX_PLAYBACK_MS);
 }
 
+// 防抖函数，用于优化输入处理
+function debounce<T extends (...args: any[]) => any>(
+  func: T,
+  wait: number
+): (...args: Parameters<T>) => void {
+  let timeout: NodeJS.Timeout | null = null;
+  return (...args: Parameters<T>) => {
+    if (timeout) clearTimeout(timeout);
+    timeout = setTimeout(() => func(...args), wait);
+  };
+}
+
 export default function HomePage() {
+  // 状态管理
   const [algorithmKey, setAlgorithmKey] = useState<AlgorithmKey>("pso");
   const [algorithmCode, setAlgorithmCode] = useState(CUSTOM_JS_TEMPLATE);
   const [objective, setObjective] = useState<ObjectiveFunctionName>("rastrigin");
@@ -55,10 +70,12 @@ export default function HomePage() {
   const [isComputing, setIsComputing] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
+  // Refs
   const animationRef = useRef<number | null>(null);
   const lastTickRef = useRef<number | null>(null);
   const accumulatedTimeRef = useRef(0);
 
+  // 派生状态
   const totalFrames = result?.history.length ?? 0;
   const effectiveAgentCount = result?.history[0]?.positions.length ?? populationSize;
   const currentSnapshot = result?.history[Math.min(currentFrameIndex, Math.max(totalFrames - 1, 0))];
@@ -69,160 +86,125 @@ export default function HomePage() {
   const progressPercent =
     totalFrames > 1 ? ((currentFrameIndex + 1) / totalFrames) * 100 : 0;
 
+  // Memoized计算
   const availableMetricKeys = useMemo(() => {
-    if (!result) {
-      return [];
-    }
-
+    if (!result) return [];
     const metricSet = new Set<string>();
-
     for (const frame of result.history) {
       for (const key of Object.keys(frame.metrics ?? {})) {
         metricSet.add(key);
       }
     }
-
     return Array.from(metricSet);
   }, [result]);
 
   const agentOptions = useMemo(() => {
     return Array.from({ length: effectiveAgentCount }, (_, index) => ({
-      label: `Agent ${index + 1}`,
+      label: `个体 ${index + 1}`,
       value: index
     }));
   }, [effectiveAgentCount]);
 
-  useEffect(() => {
-    if (!result || !isPlaying) {
-      if (animationRef.current) {
-        cancelAnimationFrame(animationRef.current);
-        animationRef.current = null;
-      }
-      lastTickRef.current = null;
-      accumulatedTimeRef.current = 0;
-      return;
-    }
-
-    const frameCount = result.history.length;
-
-    const tick = (timestamp: number) => {
-      if (lastTickRef.current === null) {
-        lastTickRef.current = timestamp;
-        accumulatedTimeRef.current = 0;
-      }
-
-      // 这里改成“累计时间差”模型：
-      // 1. 用户可以输入非常快或非常慢的自定义速度；
-      // 2. 浏览器某一帧如果卡顿，不会只推进 1 帧，而是会按累计时间补齐多帧；
-      // 3. 这样快放时更稳定，慢放时也不会因为重置 timestamp 而产生明显漂移。
-      const elapsed = timestamp - lastTickRef.current;
-      lastTickRef.current = timestamp;
-      accumulatedTimeRef.current += elapsed;
-
-      if (accumulatedTimeRef.current >= speedMs) {
-        const stepsToAdvance = Math.max(
-          1,
-          Math.floor(accumulatedTimeRef.current / speedMs)
-        );
-        accumulatedTimeRef.current -= stepsToAdvance * speedMs;
-
-        setCurrentFrameIndex((previousFrame) => {
-          if (frameCount <= 1) {
-            setIsPlaying(false);
-            return 0;
-          }
-
-          let nextFrame = previousFrame + stepsToAdvance;
-
-          if (nextFrame >= frameCount) {
-            if (loopPlayback) {
-              nextFrame %= frameCount;
-            } else {
-              setIsPlaying(false);
-              return frameCount - 1;
-            }
-          }
-
-          return nextFrame;
-        });
-      }
-
-      animationRef.current = requestAnimationFrame(tick);
-    };
-
-    animationRef.current = requestAnimationFrame(tick);
-
-    return () => {
-      if (animationRef.current) {
-        cancelAnimationFrame(animationRef.current);
-        animationRef.current = null;
-      }
-      lastTickRef.current = null;
-      accumulatedTimeRef.current = 0;
-    };
-  }, [isPlaying, loopPlayback, result, speedMs]);
-
-  useEffect(() => {
-    setSpeedMsInput(String(speedMs));
-    setFpsInput(playbackFps.toFixed(2));
-  }, [playbackFps, speedMs]);
-
-  useEffect(() => {
-    if (!result) {
-      return;
-    }
-
-    setSelectedAgents((previousSelected) =>
-      previousSelected.filter((agentIndex) => agentIndex < effectiveAgentCount)
-    );
-  }, [effectiveAgentCount, result]);
-
-  useEffect(() => {
-    if (availableMetricKeys.length === 0) {
-      setSelectedMetricKey("");
-      return;
-    }
-
-    setSelectedMetricKey((previousMetricKey) => {
-      if (previousMetricKey && availableMetricKeys.includes(previousMetricKey)) {
-        return previousMetricKey;
-      }
-
-      return availableMetricKeys[0];
-    });
-  }, [availableMetricKeys]);
-
-  function applyPlaybackSpeed(nextSpeedMs: number) {
+  // 使用useCallback优化函数引用
+  const applyPlaybackSpeed = useCallback((nextSpeedMs: number) => {
     const clampedSpeed = clampPlaybackSpeed(nextSpeedMs);
-
     setSpeedMs(clampedSpeed);
     lastTickRef.current = null;
     accumulatedTimeRef.current = 0;
-  }
+  }, []);
 
-  function commitSpeedMsInput() {
+  const commitSpeedMsInput = useCallback(() => {
     const parsed = Number(speedMsInput);
-
     if (!Number.isFinite(parsed) || parsed <= 0) {
       setSpeedMsInput(String(speedMs));
       return;
     }
-
     applyPlaybackSpeed(parsed);
-  }
+  }, [speedMsInput, speedMs, applyPlaybackSpeed]);
 
-  function commitFpsInput() {
+  const commitFpsInput = useCallback(() => {
     const parsed = Number(fpsInput);
-
     if (!Number.isFinite(parsed) || parsed <= 0) {
       setFpsInput(playbackFps.toFixed(2));
       return;
     }
-
     applyPlaybackSpeed(1000 / parsed);
-  }
+  }, [fpsInput, playbackFps, applyPlaybackSpeed]);
 
-  async function handleRunAlgorithm() {
+  const handlePlay = useCallback(() => {
+    if (!result) return;
+    if (currentFrameIndex >= result.history.length - 1) {
+      setCurrentFrameIndex(0);
+    }
+    lastTickRef.current = null;
+    accumulatedTimeRef.current = 0;
+    setIsPlaying(true);
+  }, [result, currentFrameIndex]);
+
+  const handlePause = useCallback(() => {
+    setIsPlaying(false);
+  }, []);
+
+  const handleReset = useCallback(() => {
+    setIsPlaying(false);
+    setCurrentFrameIndex(0);
+    lastTickRef.current = null;
+    accumulatedTimeRef.current = 0;
+  }, []);
+
+  const handlePrevFrame = useCallback(() => {
+    setIsPlaying(false);
+    lastTickRef.current = null;
+    accumulatedTimeRef.current = 0;
+    setCurrentFrameIndex((previousFrame) => Math.max(previousFrame - 1, 0));
+  }, []);
+
+  const handleNextFrame = useCallback(() => {
+    setIsPlaying(false);
+    lastTickRef.current = null;
+    accumulatedTimeRef.current = 0;
+    setCurrentFrameIndex((previousFrame) =>
+      Math.min(previousFrame + 1, Math.max(totalFrames - 1, 0))
+    );
+  }, [totalFrames]);
+
+  const toggleAgent = useCallback((agentIndex: number) => {
+    setSelectedAgents((previousSelected) => {
+      if (previousSelected.includes(agentIndex)) {
+        return previousSelected.filter((value) => value !== agentIndex);
+      }
+      return [...previousSelected, agentIndex].sort((a, b) => a - b);
+    });
+  }, []);
+
+  const handleExportResult = useCallback(() => {
+    if (!result) return;
+    const exportPayload = {
+      exportedAt: new Date().toISOString(),
+      config: {
+        algorithmKey,
+        objective,
+        N: populationSize,
+        MaxFEs: maxFEs,
+        dim: 2,
+        lb: [lbX, lbY],
+        ub: [ubX, ubY],
+        speedMs
+      },
+      result
+    };
+    const blob = new Blob([JSON.stringify(exportPayload, null, 2)], {
+      type: "application/json"
+    });
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement("a");
+    anchor.href = url;
+    anchor.download = `${algorithmKey}-${objective}-history.json`;
+    anchor.click();
+    window.setTimeout(() => URL.revokeObjectURL(url), 0);
+  }, [result, algorithmKey, objective, populationSize, maxFEs, lbX, lbY, ubX, ubY, speedMs]);
+
+  const handleRunAlgorithm = useCallback(async () => {
     setIsComputing(true);
     setErrorMessage(null);
     setIsPlaying(false);
@@ -246,15 +228,11 @@ export default function HomePage() {
 
       const response = await fetch("/api/run-algorithm", {
         method: "POST",
-        headers: {
-          "Content-Type": "application/json"
-        },
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify(payload)
       });
 
-      const data = (await response.json()) as AlgorithmResponse & {
-        message?: string;
-      };
+      const data = (await response.json()) as AlgorithmResponse & { message?: string };
 
       if (!response.ok) {
         throw new Error(data.message ?? "算法运行失败。");
@@ -269,89 +247,96 @@ export default function HomePage() {
     } finally {
       setIsComputing(false);
     }
-  }
+  }, [algorithmKey, algorithmCode, populationSize, maxFEs, lbX, lbY, ubX, ubY, objective]);
 
-  function handlePlay() {
-    if (!result) {
+  // 动画循环Effect
+  useEffect(() => {
+    if (!result || !isPlaying) {
+      if (animationRef.current) {
+        cancelAnimationFrame(animationRef.current);
+        animationRef.current = null;
+      }
+      lastTickRef.current = null;
+      accumulatedTimeRef.current = 0;
       return;
     }
 
-    if (currentFrameIndex >= result.history.length - 1) {
-      setCurrentFrameIndex(0);
-    }
+    const frameCount = result.history.length;
 
-    lastTickRef.current = null;
-    accumulatedTimeRef.current = 0;
-    setIsPlaying(true);
-  }
-
-  function handlePause() {
-    setIsPlaying(false);
-  }
-
-  function handleReset() {
-    setIsPlaying(false);
-    setCurrentFrameIndex(0);
-    lastTickRef.current = null;
-    accumulatedTimeRef.current = 0;
-  }
-
-  function handlePrevFrame() {
-    setIsPlaying(false);
-    lastTickRef.current = null;
-    accumulatedTimeRef.current = 0;
-    setCurrentFrameIndex((previousFrame) => Math.max(previousFrame - 1, 0));
-  }
-
-  function handleNextFrame() {
-    setIsPlaying(false);
-    lastTickRef.current = null;
-    accumulatedTimeRef.current = 0;
-    setCurrentFrameIndex((previousFrame) =>
-      Math.min(previousFrame + 1, Math.max(totalFrames - 1, 0))
-    );
-  }
-
-  function handleExportResult() {
-    if (!result) {
-      return;
-    }
-
-    const exportPayload = {
-      exportedAt: new Date().toISOString(),
-      config: {
-        algorithmKey,
-        objective,
-        N: populationSize,
-        MaxFEs: maxFEs,
-        dim: 2,
-        lb: [lbX, lbY],
-        ub: [ubX, ubY],
-        speedMs
-      },
-      result
-    };
-
-    const blob = new Blob([JSON.stringify(exportPayload, null, 2)], {
-      type: "application/json"
-    });
-    const url = URL.createObjectURL(blob);
-    const anchor = document.createElement("a");
-    anchor.href = url;
-    anchor.download = `${algorithmKey}-${objective}-history.json`;
-    anchor.click();
-    window.setTimeout(() => URL.revokeObjectURL(url), 0);
-  }
-
-  function toggleAgent(agentIndex: number) {
-    setSelectedAgents((previousSelected) => {
-      if (previousSelected.includes(agentIndex)) {
-        return previousSelected.filter((value) => value !== agentIndex);
+    const tick = (timestamp: number) => {
+      if (lastTickRef.current === null) {
+        lastTickRef.current = timestamp;
+        accumulatedTimeRef.current = 0;
       }
 
-      return [...previousSelected, agentIndex].sort((a, b) => a - b);
+      const elapsed = timestamp - lastTickRef.current;
+      lastTickRef.current = timestamp;
+      accumulatedTimeRef.current += elapsed;
+
+      if (accumulatedTimeRef.current >= speedMs) {
+        const stepsToAdvance = Math.max(1, Math.floor(accumulatedTimeRef.current / speedMs));
+        accumulatedTimeRef.current -= stepsToAdvance * speedMs;
+
+        setCurrentFrameIndex((previousFrame) => {
+          if (frameCount <= 1) {
+            setIsPlaying(false);
+            return 0;
+          }
+          let nextFrame = previousFrame + stepsToAdvance;
+          if (nextFrame >= frameCount) {
+            if (loopPlayback) {
+              nextFrame %= frameCount;
+            } else {
+              setIsPlaying(false);
+              return frameCount - 1;
+            }
+          }
+          return nextFrame;
+        });
+      }
+
+      animationRef.current = requestAnimationFrame(tick);
+    };
+
+    animationRef.current = requestAnimationFrame(tick);
+
+    return () => {
+      if (animationRef.current) {
+        cancelAnimationFrame(animationRef.current);
+        animationRef.current = null;
+      }
+      lastTickRef.current = null;
+      accumulatedTimeRef.current = 0;
+    };
+  }, [isPlaying, loopPlayback, result, speedMs]);
+
+  // 同步输入值
+  useEffect(() => {
+    setSpeedMsInput(String(speedMs));
+    setFpsInput(playbackFps.toFixed(2));
+  }, [playbackFps, speedMs]);
+
+  // 清理无效的选中个体
+  useEffect(() => {
+    if (!result) return;
+    setSelectedAgents((previousSelected) =>
+      previousSelected.filter((agentIndex) => agentIndex < effectiveAgentCount)
+    );
+  }, [effectiveAgentCount, result]);
+
+  // 自动选择可用指标
+  useEffect(() => {
+    if (availableMetricKeys.length === 0) {
+      setSelectedMetricKey("");
+      return;
+    }
+    setSelectedMetricKey((previousMetricKey) => {
+      if (previousMetricKey && availableMetricKeys.includes(previousMetricKey)) {
+        return previousMetricKey;
+      }
+      return availableMetricKeys[0];
     });
-  }
+  }, [availableMetricKeys]);
 
   return (
     <main className="min-h-screen px-4 py-6 md:px-6 xl:px-8">
@@ -360,42 +345,42 @@ export default function HomePage() {
           <div className="flex flex-col gap-4 xl:flex-row xl:items-end xl:justify-between">
             <div className="max-w-4xl space-y-4">
               <p className="text-sm uppercase tracking-[0.32em] text-cyan-300/80">
-                Heuristic Optimization Visual Lab
+                智能优化可视化平台
               </p>
               <div className="space-y-3">
                 <h1 className="text-3xl font-semibold tracking-tight text-white md:text-5xl">
-                  启发式优化算法寻优过程动态可视化平台
+                  启发式优化算法动态可视化系统
                 </h1>
                 <p className="max-w-3xl text-sm leading-7 text-slate-300 md:text-base">
-                  这个示例工程基于 Next.js App Router、Tailwind CSS 和 Plotly.js，
-                  支持一次性获取完整迭代历史，再由前端按可调速度回放 2D 搜索空间轨迹、适应度收敛曲线与参数变化。
+                  基于 Next.js、Tailwind CSS 和 Plotly.js 构建的专业优化算法可视化平台。
+                  支持一次性获取完整迭代历史，按可调速度实时回放 2D 搜索空间轨迹、适应度收敛曲线及算法参数变化。
                 </p>
               </div>
             </div>
 
             <div className="grid gap-3 sm:grid-cols-3">
-              <div className="rounded-2xl border border-white/10 bg-slate-950/40 px-4 py-3">
-                <p className="text-xs uppercase tracking-[0.22em] text-slate-400">Current Iter</p>
+              <div className="stat-card">
+                <p className="text-xs uppercase tracking-[0.22em] text-slate-400">当前迭代</p>
                 <p className="mt-2 text-2xl font-semibold text-white">
                   {currentSnapshot?.iteration ?? 0}
                 </p>
               </div>
-              <div className="rounded-2xl border border-white/10 bg-slate-950/40 px-4 py-3">
-                <p className="text-xs uppercase tracking-[0.22em] text-slate-400">Best Score</p>
+              <div className="stat-card">
+                <p className="text-xs uppercase tracking-[0.22em] text-slate-400">最优适应度</p>
                 <p className="mt-2 text-2xl font-semibold text-white">
                   {currentSnapshot?.currentBestScore?.toExponential(3) ?? "--"}
                 </p>
               </div>
-              <div className="rounded-2xl border border-white/10 bg-slate-950/40 px-4 py-3">
-                <p className="text-xs uppercase tracking-[0.22em] text-slate-400">Playback</p>
-                <div className="mt-2 space-y-1">
-                  <p className="text-2xl font-semibold text-white">
-                    {isPlaying ? "Playing" : "Paused"}
-                  </p>
-                  <p className="text-xs text-cyan-200">
-                    {playbackFps.toFixed(2)} FPS / {playbackMultiplier.toFixed(2)}x
-                  </p>
-                </div>
+              <div className="stat-card">
+                <p className="text-xs uppercase tracking-[0.22em] text-slate-400">回放状态</p>
+                  <div className="mt-2 space-y-1">
+                    <p className="text-2xl font-semibold text-white">
+                      {isPlaying ? "播放中" : "已暂停"}
+                    </p>
+                    <p className="text-xs text-cyan-200">
+                      {playbackFps.toFixed(2)} 帧/秒 / {playbackMultiplier.toFixed(2)}x 速度
+                    </p>
+                  </div>
               </div>
             </div>
           </div>
@@ -403,11 +388,17 @@ export default function HomePage() {
 
         <div className="grid gap-6 xl:grid-cols-[420px_minmax(0,1fr)]">
           <aside className="glass-card h-fit p-5 md:p-6 xl:sticky xl:top-6">
-            <div className="space-y-6">
+            <div className="space-y-7">
+              {/* 算法配置区域 */}
               <section className="space-y-4">
+                <div className="flex items-center gap-2">
+                  <div className="h-1 w-8 rounded-full bg-gradient-to-r from-cyan-400 to-orange-400"></div>
+                  <h3 className="text-sm font-semibold text-slate-200">算法配置</h3>
+                </div>
+                
                 <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-1 2xl:grid-cols-2">
                   <div>
-                    <label className="panel-label">算法类型</label>
+                    <label className="panel-label">优化算法</label>
                     <select
                       className="panel-select"
                       value={algorithmKey}
@@ -422,7 +413,7 @@ export default function HomePage() {
                   </div>
 
                   <div>
-                    <label className="panel-label">目标函数</label>
+                    <label className="panel-label">测试函数</label>
                     <select
                       className="panel-select"
                       value={objective}
@@ -437,32 +428,38 @@ export default function HomePage() {
                   </div>
                 </div>
 
-                <div>
-                  <div className="mb-3 rounded-2xl border border-white/10 bg-slate-950/35 px-4 py-3">
-                    <p className="text-xs uppercase tracking-[0.22em] text-slate-500">Algorithm Note</p>
-                    <p className="mt-2 text-sm leading-6 text-slate-300">
-                      {selectedAlgorithm?.description}
-                    </p>
-                  </div>
-
-                  <label className="panel-label">算法代码 / 模板</label>
-                  <textarea
-                    className="panel-input min-h-[260px] resize-y font-mono text-[13px] leading-6"
-                    value={editorValue}
-                    readOnly={algorithmKey !== "custom-js"}
-                    onChange={(event) => setAlgorithmCode(event.target.value)}
-                    spellCheck={false}
-                  />
-                  <p className="mt-2 text-xs leading-6 text-slate-400">
-                    选择“自定义 JS”后，API 会按 <code>runAlgorithm(context)</code> 契约执行该代码。
+                <div className="mb-3 rounded-2xl border border-white/10 bg-slate-950/35 px-4 py-3">
+                  <p className="text-xs uppercase tracking-[0.22em] text-slate-500">算法说明</p>
+                  <p className="mt-2 text-sm leading-6 text-slate-300">
+                    {selectedAlgorithm?.description}
                   </p>
                 </div>
+
+                <label className="panel-label">算法实现代码</label>
+                <textarea
+                  className="panel-input min-h-[200px] resize-y font-mono text-[13px] leading-6"
+                  value={editorValue}
+                  readOnly={algorithmKey !== "custom-js"}
+                  onChange={(event) => setAlgorithmCode(event.target.value)}
+                  spellCheck={false}
+                />
+                <p className="mt-2 text-xs leading-6 text-slate-400">
+                  选择“自定义 JS”后，系统将按 <code>runAlgorithm(context)</code> 接口规范执行您的代码。
+                </p>
               </section>
 
+              <div className="section-divider"></div>
+
+              {/* 参数设置区域 */}
               <section className="space-y-4">
+                <div className="flex items-center gap-2">
+                  <div className="h-1 w-8 rounded-full bg-gradient-to-r from-orange-400 to-yellow-400"></div>
+                  <h3 className="text-sm font-semibold text-slate-200">参数设置</h3>
+                </div>
+                
                 <div className="grid gap-4 md:grid-cols-2">
                   <div>
-                    <label className="panel-label">种群数量 N</label>
+                    <label className="panel-label">种群规模</label>
                     <input
                       className="panel-input"
                       type="number"
@@ -474,7 +471,7 @@ export default function HomePage() {
                   </div>
 
                   <div>
-                    <label className="panel-label">最大迭代 MaxFEs</label>
+                    <label className="panel-label">最大迭代次数</label>
                     <input
                       className="panel-input"
                       type="number"
@@ -488,7 +485,7 @@ export default function HomePage() {
 
                 <div className="grid gap-4 md:grid-cols-2">
                   <div>
-                    <label className="panel-label">下界 lb = [x, y]</label>
+                    <label className="panel-label">搜索下界 [x, y]</label>
                     <div className="grid grid-cols-2 gap-3">
                       <input
                         className="panel-input"
@@ -508,7 +505,7 @@ export default function HomePage() {
                   </div>
 
                   <div>
-                    <label className="panel-label">上界 ub = [x, y]</label>
+                    <label className="panel-label">搜索上界 [x, y]</label>
                     <div className="grid grid-cols-2 gap-3">
                       <input
                         className="panel-input"
@@ -529,10 +526,18 @@ export default function HomePage() {
                 </div>
               </section>
 
+              <div className="section-divider"></div>
+
+              {/* 回放控制区域 */}
               <section className="space-y-4">
+                <div className="flex items-center gap-2">
+                  <div className="h-1 w-8 rounded-full bg-gradient-to-r from-yellow-400 to-green-400"></div>
+                  <h3 className="text-sm font-semibold text-slate-200">回放控制</h3>
+                </div>
+                
                 <div>
                   <div className="mb-3 flex items-center justify-between gap-3">
-                    <label className="panel-label !mb-0">动画暂停时长</label>
+                    <label className="panel-label !mb-0">动画帧间隔</label>
                     <div className="flex flex-wrap items-center justify-end gap-2">
                       <span className="rounded-full border border-cyan-400/20 bg-cyan-400/10 px-3 py-1 text-xs font-semibold text-cyan-200">
                         {speedMs} ms / 帧
@@ -545,7 +550,7 @@ export default function HomePage() {
 
                   <div className="grid gap-3 md:grid-cols-2">
                     <div>
-                      <label className="panel-label">精确速度 ms/frame</label>
+                      <label className="panel-label">精确间隔 (毫秒/帧)</label>
                       <input
                         className="panel-input"
                         type="number"
@@ -564,7 +569,7 @@ export default function HomePage() {
                     </div>
 
                     <div>
-                      <label className="panel-label">换算速度 FPS</label>
+                      <label className="panel-label">帧率 (FPS)</label>
                       <input
                         className="panel-input"
                         type="number"
@@ -614,9 +619,9 @@ export default function HomePage() {
                     <span>{MAX_PLAYBACK_MS}ms</span>
                   </div>
                   <div className="mt-2 flex items-center justify-between gap-3 rounded-2xl border border-white/10 bg-slate-950/35 px-4 py-3 text-xs text-slate-400">
-                    <span>支持自定义 1 到 5000 ms/帧，也可直接输入 FPS。</span>
+                    <span>支持自定义 1 到 5000 毫秒/帧的间隔，也可直接输入帧率。</span>
                     <span className="font-semibold text-slate-200">
-                      当前速度 {playbackMultiplier.toFixed(2)}x
+                      相对速度 {playbackMultiplier.toFixed(2)}x
                     </span>
                   </div>
                 </div>
@@ -628,7 +633,7 @@ export default function HomePage() {
                     disabled={isComputing}
                     onClick={handleRunAlgorithm}
                   >
-                    {isComputing ? "计算中..." : "开始计算"}
+                    {isComputing ? "正在计算..." : "开始运行"}
                   </button>
                   <button
                     className="panel-button-secondary"
@@ -636,7 +641,7 @@ export default function HomePage() {
                     disabled={!result}
                     onClick={handlePlay}
                   >
-                    播放
+                    继续播放
                   </button>
                   <button
                     className="panel-button-secondary"
@@ -644,7 +649,7 @@ export default function HomePage() {
                     disabled={!result}
                     onClick={handlePause}
                   >
-                    暂停
+                    暂停播放
                   </button>
                   <button
                     className="panel-button-danger"
@@ -652,7 +657,7 @@ export default function HomePage() {
                     disabled={!result}
                     onClick={handleReset}
                   >
-                    重置
+                    重新开始
                   </button>
                   <button
                     className="panel-button-secondary"
@@ -660,7 +665,7 @@ export default function HomePage() {
                     disabled={!result}
                     onClick={handlePrevFrame}
                   >
-                    上一帧
+                    后退一帧
                   </button>
                   <button
                     className="panel-button-secondary"
@@ -668,20 +673,20 @@ export default function HomePage() {
                     disabled={!result}
                     onClick={handleNextFrame}
                   >
-                    下一帧
+                    前进一帧
                   </button>
                 </div>
 
                 <div className="rounded-2xl border border-white/10 bg-slate-950/35 p-4">
                   <div className="mb-3 flex items-center justify-between gap-3">
                     <div>
-                      <label className="panel-label !mb-1">当前回放进度</label>
+                      <label className="panel-label !mb-1">回放进度</label>
                       <p className="text-sm text-slate-300">
-                        第 {currentSnapshot?.iteration ?? 0} / {totalFrames} 代
+                        第 {currentSnapshot?.iteration ?? 0} 代 / 共 {totalFrames} 代
                       </p>
                     </div>
                     <span className="text-xs text-slate-500">
-                      进度 {progressPercent.toFixed(1)}% / 选中 {selectedAgents.length || "全部"} 个体
+                      完成度 {progressPercent.toFixed(1)}% / 显示 {selectedAgents.length || "全部"} 个体
                     </span>
                   </div>
                   <input
@@ -708,16 +713,24 @@ export default function HomePage() {
                     checked={loopPlayback}
                     onChange={(event) => setLoopPlayback(event.target.checked)}
                   />
-                  <span>播放到末尾后自动循环</span>
+                  <span>播放结束后自动循环</span>
                 </label>
               </section>
 
+              <div className="section-divider"></div>
+
+              {/* 观察设置区域 */}
               <section className="space-y-3">
+                <div className="flex items-center gap-2">
+                  <div className="h-1 w-8 rounded-full bg-gradient-to-r from-green-400 to-cyan-400"></div>
+                  <h3 className="text-sm font-semibold text-slate-200">观察设置</h3>
+                </div>
+                
                 <div className="flex items-center justify-between gap-3">
                   <div>
-                    <label className="panel-label !mb-1">观察点定向追踪</label>
+                    <label className="panel-label !mb-1">个体追踪模式</label>
                     <p className="text-xs leading-6 text-slate-400">
-                      不勾选时显示全部个体；勾选后仅显示所选个体，并额外绘制它们的历史轨迹。
+                      未选择时显示全部个体；选择特定个体后，仅显示选中个体并绘制其运动轨迹。
                     </p>
                   </div>
                   <button
@@ -725,7 +738,7 @@ export default function HomePage() {
                     type="button"
                     onClick={() => setSelectedAgents([])}
                   >
-                    清空选择
+                    清除选择
                   </button>
                 </div>
 
@@ -757,12 +770,20 @@ export default function HomePage() {
                 </div>
               </section>
 
+              <div className="section-divider"></div>
+
+              {/* 数据导出区域 */}
               <section className="space-y-3">
+                <div className="flex items-center gap-2">
+                  <div className="h-1 w-8 rounded-full bg-gradient-to-r from-cyan-400 to-purple-400"></div>
+                  <h3 className="text-sm font-semibold text-slate-200">数据与指标</h3>
+                </div>
+                
                 <div className="flex items-center justify-between gap-3">
                   <div>
-                    <label className="panel-label !mb-1">参数曲线指标</label>
+                    <label className="panel-label !mb-1">算法参数指标</label>
                     <p className="text-xs leading-6 text-slate-400">
-                      自动读取算法返回的 <code>metrics</code> 字段，可切换查看不同参数。
+                      自动读取算法返回的 <code>metrics</code> 数据，可切换查看不同参数的变化趋势。
                     </p>
                   </div>
                   <button
@@ -771,7 +792,7 @@ export default function HomePage() {
                     disabled={!result}
                     onClick={handleExportResult}
                   >
-                    导出结果 JSON
+                    导出数据
                   </button>
                 </div>
 
@@ -782,7 +803,7 @@ export default function HomePage() {
                   onChange={(event) => setSelectedMetricKey(event.target.value)}
                 >
                   {availableMetricKeys.length === 0 ? (
-                    <option value="">暂无可选指标</option>
+                    <option value="">暂无可用指标</option>
                   ) : (
                     availableMetricKeys.map((metricKey) => (
                       <option key={metricKey} value={metricKey}>
@@ -793,7 +814,7 @@ export default function HomePage() {
                 </select>
 
                 <div className="rounded-2xl border border-white/10 bg-slate-950/35 px-4 py-3 text-sm text-slate-300">
-                  当前全局最优位置：
+                  全局最优解位置：
                   <span className="ml-2 font-mono text-cyan-200">
                     {result
                       ? `[${result.bestPos[0].toFixed(4)}, ${result.bestPos[1].toFixed(4)}]`
